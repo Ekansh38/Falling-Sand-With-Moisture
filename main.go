@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
@@ -11,8 +12,11 @@ type Grain struct {
 	boardPos [2]int32
 	locked   bool
 	moisture int
-	yAcc     int
-	yVel     int
+	yAcc     float32
+	yVel     float32
+	xAcc     float32
+	xVel     float32
+	mass     float32
 }
 
 func (g *Grain) draw(cellSize int) {
@@ -25,60 +29,179 @@ func (g *Grain) draw(cellSize int) {
 	rl.DrawRectangle(int32(g.pixelPos[0]), int32(g.pixelPos[1]), int32(cellSize), int32(cellSize), rl.Color{R: r, G: gColor, B: b, A: 255})
 }
 
-func (g *Grain) update(cellSize int, sandPositions [][]int, topBuffer int) [][]int {
+func (g *Grain) addForce(force rl.Vector2) {
+	yAcc := force.Y / g.mass
+	aAcc := force.X / g.mass
+	g.yAcc += yAcc
+	g.xAcc += aAcc
+}
+
+func (g *Grain) update(cellSize int, sandPositions [][]int, bottomBuffer int) [][]int {
 	if g.pixelPos[0] < 0 || g.pixelPos[0]+float32(cellSize) > float32(rl.GetScreenWidth()) {
 		return sandPositions
 	} // Check if the particle is within the screen
 
-	if !g.locked {
-		g.yAcc = 1
-		g.yVel += g.yAcc
+	if g.locked {
+		return sandPositions
+	} // Make sure the particle is not locked
 
-		stepSize := float32(cellSize) / 2 // Small step size to avoid skipping rows
-		remainingFall := float32(g.yVel)  // Total movement this frame
+	g.yAcc += 0.5 // Gravity not affected by mass
+	g.yVel += g.yAcc
+	g.xVel += g.xAcc
 
-		// Simulate movement in small steps
-		for remainingFall > 0 {
-			step := stepSize
-			if remainingFall < stepSize {
-				step = remainingFall
-			}
+	stepSize := float32(cellSize) / 2 // Small step size to avoid skipping rows
+	remainingFall := float32(g.yVel)  // Total movement this frame
 
-			// Predict the next position
-			nextPixelY := g.pixelPos[1] + step
-			nextBoardY := int32(nextPixelY) / int32(cellSize)
-
-			// Check for collision at the next grid position
-			if nextBoardY >= int32(len(sandPositions)) {
-				g.locked = true
-				g.boardPos[1] = int32(len(sandPositions)) - 1
-				g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
-				sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
-				return sandPositions
-			}
-
-			if sandPositions[nextBoardY][g.boardPos[0]] == 1 {
-				g.locked = true
-				g.boardPos[1] = nextBoardY - 1
-				g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
-				sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
-				return sandPositions
-			}
-
-			// No collision, update position
-			g.pixelPos[1] = nextPixelY
-			g.boardPos[1] = nextBoardY
-
-			remainingFall -= step
+	// Simulate movement in small steps
+	for remainingFall > 0 {
+		step := stepSize
+		if remainingFall < stepSize {
+			step = remainingFall
 		}
+
+		// Predict the next position
+		nextPixelY := g.pixelPos[1] + step
+		nextBoardY := int32(nextPixelY) / int32(cellSize)
+
+		// Check for collision at the next grid position
+		if nextBoardY >= int32(len(sandPositions)) {
+			g.locked = true
+			g.boardPos[1] = int32(len(sandPositions)) - 1
+			g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
+			sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
+			return sandPositions
+		}
+
+		if sandPositions[nextBoardY][g.boardPos[0]] == 1 {
+			g.locked = true
+			g.boardPos[1] = nextBoardY - 1
+			g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
+			sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
+			return sandPositions
+		}
+
+		// No collision, update position
+		g.pixelPos[1] = nextPixelY
+		g.boardPos[1] = nextBoardY
+
+		g.pixelPos[0] += g.xVel
+		g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
+
+		if g.boardPos[0] < 0 {
+			g.boardPos[0] = 0
+			g.pixelPos[0] = 0
+			g.xVel = 0 // Stop movement at the boundary
+		}
+		if g.boardPos[0] >= int32(len(sandPositions[0])) {
+			g.boardPos[0] = int32(len(sandPositions[0])) - 1
+			g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
+			g.xVel = 0 // Stop movement at the boundary
+		}
+		remainingFall -= step
 	}
 
+	g.yAcc = 0
 	return sandPositions
 }
 
 func main() {
-	// rl.SetConfigFlags(rl.FlagWindowMaximized)
-	rl.InitWindow(1200, 800, "Complex Sand Simulation")
+	screenWidth, screenHeight := 800, 600
+
+	// Initialize a small window for the resolution picker
+	rl.InitWindow(400, 300, "Select Screen Dimensions")
+	defer rl.CloseWindow()
+
+	// Input fields
+	widthInput := "800"
+	heightInput := "600"
+	currentInput := &widthInput // Pointer to track which input is being edited
+	isRunning := true
+
+	for isRunning && !rl.WindowShouldClose() {
+		rl.BeginDrawing()
+		rl.ClearBackground(rl.RayWhite)
+
+		// Draw title
+		rl.DrawText("Select Screen Dimensions", 50, 50, 20, rl.DarkGray)
+
+		// Draw input labels
+		rl.DrawText("Width:", 50, 100, 20, rl.Black)
+		rl.DrawText("Height:", 50, 150, 20, rl.Black)
+
+		// Draw input fields
+		rl.DrawRectangle(120, 100, 200, 30, rl.LightGray)
+		rl.DrawRectangle(120, 150, 200, 30, rl.LightGray)
+
+		// Highlight active input
+		if currentInput == &widthInput {
+			rl.DrawRectangleLines(120, 100, 200, 30, rl.Blue)
+		} else {
+			rl.DrawRectangleLines(120, 150, 200, 30, rl.Blue)
+		}
+
+		rl.DrawText(widthInput, 125, 105, 20, rl.Black)
+		rl.DrawText(heightInput, 125, 155, 20, rl.Black)
+
+		// Instructions
+		rl.DrawText("Press Tab to switch fields", 50, 220, 20, rl.Gray)
+
+		// Handle keyboard input
+		if rl.IsKeyPressed(rl.KeyTab) {
+			if currentInput == &widthInput {
+				currentInput = &heightInput
+			} else {
+				currentInput = &widthInput
+			}
+		}
+
+		// Handle backspace
+		if rl.IsKeyPressed(rl.KeyBackspace) && len(*currentInput) > 0 {
+			*currentInput = (*currentInput)[:len(*currentInput)-1]
+		}
+
+		// Handle number input
+		key := rl.GetKeyPressed()
+		if key >= '0' && key <= '9' {
+			*currentInput += string(rune(key))
+		}
+
+		// Start button
+		if rl.IsKeyPressed(rl.KeyEnter) { // If Enter is pressed
+			w, err1 := strconv.Atoi(widthInput)
+			h, err2 := strconv.Atoi(heightInput)
+			if err1 == nil && err2 == nil && w > 0 && h > 0 {
+				screenWidth = w
+				screenHeight = h
+				isRunning = false // Exit the menu
+			} else {
+				rl.DrawText("Invalid input!", 50, 200, 20, rl.Red)
+			}
+		}
+
+		rl.EndDrawing()
+	}
+
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	// Main game loop
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+	//
+
+	// Initialize the main game window with selected dimensions
+	rl.InitWindow(int32(screenWidth), int32(screenHeight), "Complex Sand Simulation")
+	defer rl.CloseWindow()
 
 	var sandPositions [][]int
 	var sandParticles []Grain
@@ -87,15 +210,6 @@ func main() {
 
 	var cellSize int = 10
 	bottomBuffer := 100
-
-	defer rl.CloseWindow()
-
-	// Manually switch to fullscreen
-	screenWidth := rl.GetMonitorWidth(0)   // Primary monitor width
-	screenHeight := rl.GetMonitorHeight(0) // Primary monitor height
-	rl.SetWindowSize(screenWidth, screenHeight)
-	rl.SetWindowPosition(0, 0) // Ensure it's positioned correctly
-	rl.ToggleFullscreen()
 
 	rl.SetTargetFPS(60)
 
@@ -117,6 +231,10 @@ func main() {
 
 		for i := 0; i < len(sandParticles); i++ {
 			sandParticles[i].draw(cellSize)
+			// Wind
+			var xForce float32 = float32(rl.GetRandomValue(-100, 100))
+			xForce = xForce / 10000
+			sandParticles[i].addForce(rl.NewVector2(xForce, 0))
 			sandPositions = sandParticles[i].update(cellSize, sandPositions, bottomBuffer)
 		} // Draw and update all particles
 
@@ -177,9 +295,10 @@ func dropSand(sandParticles []Grain, cellSize int, sandPositions [][]int, moistu
 		pixelPos: [2]float32{pos.X, pos.Y},
 		boardPos: [2]int32{int32(pos.X) / int32(cellSize), int32(pos.Y) / int32(cellSize)},
 		locked:   false,
-		yAcc:     0,
+		yAcc:     1,
 		yVel:     0,
 		moisture: moistureSelected,
+		mass:     0.1,
 	})
 
 	return sandParticles
