@@ -68,6 +68,10 @@ func (g *Grain) update(cellSize int, sandPositions [][]int, bottomBuffer int) []
 			g.locked = true
 			g.boardPos[1] = int32(len(sandPositions)) - 1
 			g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
+
+			g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
+			g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
+
 			sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
 			return sandPositions
 		}
@@ -76,6 +80,10 @@ func (g *Grain) update(cellSize int, sandPositions [][]int, bottomBuffer int) []
 			g.locked = true
 			g.boardPos[1] = nextBoardY - 1
 			g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
+
+			g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
+			g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
+
 			sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
 			return sandPositions
 		}
@@ -233,10 +241,14 @@ func main() {
 			sandParticles[i].draw(cellSize)
 			// Wind
 			var xForce float32 = float32(rl.GetRandomValue(-100, 100))
-			xForce = xForce / 10000
+			xForce = xForce / 100000
 			sandParticles[i].addForce(rl.NewVector2(xForce, 0))
 			sandPositions = sandParticles[i].update(cellSize, sandPositions, bottomBuffer)
 		} // Draw and update all particles
+
+		bottomYPos := int32(rl.GetScreenHeight() - bottomBuffer)
+		rightSide := int32(rl.GetScreenWidth())
+		rl.DrawLine(0, bottomYPos, rightSide, bottomYPos, rl.White)
 
 		if rl.IsMouseButtonDown(rl.MouseLeftButton) {
 			// Check if the mouse is within the grid
