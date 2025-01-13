@@ -121,7 +121,7 @@ func (g *Grain) update(cellSize int, sandPositions [][]int, bottomBuffer int, sa
 	}
 
 	// Gravity
-	g.yAcc = 10 // Gravity not affected by mass
+	g.yAcc = 0.5 // Gravity not affected by mass
 	g.yVel += g.yAcc
 	g.xVel += g.xAcc
 
