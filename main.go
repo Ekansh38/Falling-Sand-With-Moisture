@@ -17,6 +17,10 @@ type Grain struct {
 	xAcc     float32
 	xVel     float32
 	mass     float32
+	xPush    float32
+	yPush    float32
+	xVPush   float32
+	yVPush   float32
 }
 
 func (g *Grain) draw(cellSize int) {
@@ -36,80 +40,218 @@ func (g *Grain) addForce(force rl.Vector2) {
 	g.xAcc += aAcc
 }
 
-func (g *Grain) update(cellSize int, sandPositions [][]int, bottomBuffer int) [][]int {
+func (g *Grain) windPush(force rl.Vector2) {
+	yAcc := force.Y / g.mass
+	aAcc := force.X / g.mass
+	g.yPush += yAcc
+	g.xPush += aAcc
+}
+
+func checkColumnStable(x int32, sandPositions [][]int, sandParticles []Grain, cellSize int) bool {
+	for y := len(sandPositions) - 1; y >= 0; y-- { // Iterate from bottom to top
+		if sandPositions[y][x] == 1 { // Particle exists at this position
+			// Find the particle in the list
+			for i := 0; i < len(sandParticles); i++ {
+				if sandParticles[i].boardPos[0] == x && sandParticles[i].boardPos[1] == int32(y) {
+					// Check if it's stable
+					if !sandParticles[i].locked && y < len(sandPositions)-1 {
+						if sandPositions[y+1][x] == 0 { // No support below
+							return false
+						}
+					}
+				}
+			}
+		}
+	}
+	return true
+}
+
+func (g *Grain) unlock(sandPositions [][]int, sandParticles []Grain) {
+	g.locked = false
+	g.yVel = 1 // Reset velocity to start falling
+	for i := 0; i < len(sandParticles); i++ {
+		if sandParticles[i].boardPos[0] == g.boardPos[0] && sandParticles[i].boardPos[1]+1 == g.boardPos[1] {
+			sandParticles[i].unlock(sandPositions, sandParticles)
+		}
+	}
+}
+
+func (g *Grain) update(cellSize int, sandPositions [][]int, bottomBuffer int, sandParticles []Grain) [][]int {
+	if g.locked {
+		g.moisture = 1
+	} else {
+		g.moisture = 10
+	}
+
+	g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
+	g.boardPos[1] = int32(g.pixelPos[1]) / int32(cellSize)
+
+	// Apply wind forces
+	g.yVPush += g.yPush
+	g.xVPush += g.xPush
+
+	newPixelPos := rl.NewVector2(g.pixelPos[0]+g.xVPush, g.pixelPos[1]+g.yVPush)
+	newBoardPos := [2]int32{int32(newPixelPos.X) / int32(cellSize), int32(newPixelPos.Y) / int32(cellSize)}
+
+	if g.boardPos[0] != newBoardPos[0] || g.boardPos[1] != newBoardPos[1] {
+		g.unlock(sandPositions, sandParticles)
+		sandPositions[g.boardPos[1]][g.boardPos[0]] = 0
+	}
+
+	g.pixelPos[1] += g.yVPush
+	g.pixelPos[0] += g.xVPush
+
+	g.boardPos[1] = int32(g.pixelPos[1]) / int32(cellSize)
+	g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
+
+	// Reduce push gradually
+	g.yVPush *= 0.9
+	g.xVPush *= 0.9
+	g.yPush = 0
+	g.xPush = 0
+
+	// Ensure particle is within bounds
 	if g.pixelPos[0] < 0 || g.pixelPos[0]+float32(cellSize) > float32(rl.GetScreenWidth()) {
 		return sandPositions
-	} // Check if the particle is within the screen
+	}
 
+	// Skip locked particles
 	if g.locked {
 		return sandPositions
-	} // Make sure the particle is not locked
+	}
 
-	g.yAcc += 0.5 // Gravity not affected by mass
+	// Gravity
+	g.yAcc = 10 // Gravity not affected by mass
 	g.yVel += g.yAcc
 	g.xVel += g.xAcc
 
-	stepSize := float32(cellSize) / 2 // Small step size to avoid skipping rows
-	remainingFall := float32(g.yVel)  // Total movement this frame
+	remainingFall := float32(g.yVel)
 
-	// Simulate movement in small steps
+	// Simulate falling
 	for remainingFall > 0 {
-		step := stepSize
-		if remainingFall < stepSize {
+		step := float32(cellSize) / 2
+		if remainingFall < step {
 			step = remainingFall
 		}
 
-		// Predict the next position
 		nextPixelY := g.pixelPos[1] + step
 		nextBoardY := int32(nextPixelY) / int32(cellSize)
 
-		// Check for collision at the next grid position
-		if nextBoardY >= int32(len(sandPositions)) {
-			g.locked = true
-			g.boardPos[1] = int32(len(sandPositions)) - 1
-			g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
+		// Check for collision below
+		if nextBoardY >= int32(len(sandPositions)) || sandPositions[nextBoardY][g.boardPos[0]] == 1 {
+			// Check column stability
+			if checkColumnStable(g.boardPos[0], sandPositions, sandParticles, cellSize) {
+				g.locked = true
+				g.boardPos[1] = nextBoardY - 1
+				g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
 
-			g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
-			g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
+				g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
+				g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
 
-			sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
-			return sandPositions
+				sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
+				return sandPositions
+			} else {
+				// Particle remains unlocked
+				break
+			}
 		}
 
-		if sandPositions[nextBoardY][g.boardPos[0]] == 1 {
-			g.locked = true
-			g.boardPos[1] = nextBoardY - 1
-			g.pixelPos[1] = float32(g.boardPos[1]) * float32(cellSize)
-
-			g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
-			g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
-
-			sandPositions[g.boardPos[1]][g.boardPos[0]] = 1
-			return sandPositions
-		}
-
-		// No collision, update position
 		g.pixelPos[1] = nextPixelY
 		g.boardPos[1] = nextBoardY
-
-		g.pixelPos[0] += g.xVel
-		g.boardPos[0] = int32(g.pixelPos[0]) / int32(cellSize)
-
-		if g.boardPos[0] < 0 {
-			g.boardPos[0] = 0
-			g.pixelPos[0] = 0
-			g.xVel = 0 // Stop movement at the boundary
-		}
-		if g.boardPos[0] >= int32(len(sandPositions[0])) {
-			g.boardPos[0] = int32(len(sandPositions[0])) - 1
-			g.pixelPos[0] = float32(g.boardPos[0]) * float32(cellSize)
-			g.xVel = 0 // Stop movement at the boundary
-		}
 		remainingFall -= step
 	}
 
 	g.yAcc = 0
 	return sandPositions
+}
+
+type Fan struct {
+	pos       rl.Vector2
+	direction int
+	strength  float32
+	width     float32
+	height    float32
+	wind      []Wind
+	timer     int
+	spawnRate int
+}
+
+func (f *Fan) draw(cellSize int) {
+	rl.DrawRectangle(int32(f.pos.X), int32(f.pos.Y), int32(cellSize), (int32(cellSize) * 8), rl.Color{R: 0, G: 0, B: 255, A: 255})
+}
+
+func (f *Fan) update(cellSize int, sandPositions [][]int, sandParticles []Grain) {
+	f.timer++ // Increment the timer
+
+	if f.timer >= f.spawnRate {
+		// Emit wind particles
+		xPos := f.pos.X + f.width
+		for i := 0; i < 1; i++ { // Emit two wind particles
+			yPos := rl.GetRandomValue(int32(f.pos.Y), int32(f.pos.Y+f.height))
+			direction := 4
+			if f.pos.X > float32(rl.GetScreenWidth()/2) {
+				direction = 2
+			}
+			wind := Wind{
+				direction: direction,
+				xVel:      2.0, // Constant velocity
+				yVel:      0.0,
+				xPos:      float32(xPos),
+				yPos:      float32(yPos), // Small offset for multiple particles
+			}
+			f.wind = append(f.wind, wind)
+		}
+		f.timer = 0 // Reset the timer
+	}
+	for i := 0; i < len(f.wind); i++ {
+		f.wind[i].draw()
+		f.wind[i].update(cellSize, sandPositions, sandParticles)
+		if f.wind[i].xPos > float32(rl.GetScreenWidth()) {
+			f.wind = append(f.wind[:i], f.wind[i+1:]...)
+		}
+	}
+}
+
+type Wind struct {
+	direction int
+	xVel      float32
+	yVel      float32
+	yAcc      float32
+	xAcc      float32
+	xPos      float32
+	yPos      float32
+}
+
+func (w *Wind) update(cellSize int, sandPositions [][]int, sandParticles []Grain) {
+	if w.direction == 2 {
+		w.xVel = float32(rl.GetRandomValue(-50, -70)) / 100
+	} else {
+		w.xVel = float32(rl.GetRandomValue(50, 70)) / 100
+	}
+	w.xPos += w.xVel
+
+	// Brownian motion
+
+	var xForce float32 = float32(rl.GetRandomValue(-100, 100))
+	xForce = xForce / 3000
+	var yForce float32 = float32(rl.GetRandomValue(-100, 100))
+	yForce = yForce / 3000
+
+	w.xPos += xForce
+	w.yPos += yForce
+
+	// Push Sand
+	gridX := (int(w.xPos) / cellSize)
+	gridY := (int(w.yPos) / cellSize)
+	for i := 0; i < len(sandParticles); i++ {
+		if sandParticles[i].boardPos[0] == int32(gridX) && sandParticles[i].boardPos[1] == int32(gridY) {
+			sandParticles[i].windPush(rl.NewVector2(w.xVel/2, 0))
+		}
+	}
+}
+
+func (w *Wind) draw() {
+	rl.DrawCircle(int32(w.xPos), int32(w.yPos), 1, rl.White)
 }
 
 func main() {
@@ -216,6 +358,9 @@ func main() {
 	buttonX := 0
 	moistureSelected := 1 // Default dry
 
+	var selectedTool int = 0 // 0 = Sand, 1 = Fan
+	var fans []Fan
+
 	var cellSize int = 10
 	bottomBuffer := 100
 
@@ -240,27 +385,56 @@ func main() {
 		for i := 0; i < len(sandParticles); i++ {
 			sandParticles[i].draw(cellSize)
 			// Wind
-			var xForce float32 = float32(rl.GetRandomValue(-100, 100))
-			xForce = xForce / 100000
-			sandParticles[i].addForce(rl.NewVector2(xForce, 0))
-			sandPositions = sandParticles[i].update(cellSize, sandPositions, bottomBuffer)
+			// var xForce float32 = float32(rl.GetRandomValue(-100, 100))
+			// xForce = xForce / 100000
+			// sandParticles[i].addForce(rl.NewVector2(xForce, 0))
+			sandPositions = sandParticles[i].update(cellSize, sandPositions, bottomBuffer, sandParticles)
 		} // Draw and update all particles
+
+		for i := 0; i < len(fans); i++ {
+			fans[i].draw(cellSize)
+			fans[i].update(cellSize, sandPositions, sandParticles)
+		}
 
 		bottomYPos := int32(rl.GetScreenHeight() - bottomBuffer)
 		rightSide := int32(rl.GetScreenWidth())
 		rl.DrawLine(0, bottomYPos, rightSide, bottomYPos, rl.White)
 
 		if rl.IsMouseButtonDown(rl.MouseLeftButton) {
-			// Check if the mouse is within the grid
-			if rl.GetMousePosition().Y < float32(rl.GetScreenHeight()-bottomBuffer) {
-				sandParticles = dropSand(sandParticles, cellSize, sandPositions, moistureSelected)
+			if selectedTool == 0 {
+				// Check if the mouse is within the grid
+				if rl.GetMousePosition().Y < float32(rl.GetScreenHeight()-bottomBuffer) {
+					sandParticles = dropSand(sandParticles, cellSize, sandPositions, moistureSelected)
+				}
+			} else {
+				pos := rl.GetMousePosition()
+				pos.X = float32(int(pos.X)/int(cellSize)) * float32(cellSize)
+				pos.Y = float32(int(pos.Y)/int(cellSize)) * float32(cellSize)
+				fans = append(fans, Fan{
+					pos:       pos,
+					direction: 4,
+					strength:  1.0,
+					width:     float32(cellSize),
+					height:    float32(cellSize * 8),
+					spawnRate: 20,
+				})
 			}
-		} // Drop sand
+		}
+
+		if rl.IsKeyPressed(rl.KeyC) {
+			if selectedTool == 0 {
+				selectedTool = 1
+			} else {
+				selectedTool = 0
+			}
+		}
 
 		// Slider
 		value, xPos := slider(bottomBuffer, buttonX)
 		buttonX = xPos
 		moistureSelected = value
+
+		drawMouseOutlines(selectedTool, cellSize)
 
 		rl.EndDrawing()
 	}
@@ -355,4 +529,64 @@ func slider(topBuffer int, buttonX int) (int, int) {
 	// Calculate value
 	value := (buttonX - int(sliderX)) / pixelsPerValue
 	return value + 1, buttonX
+}
+
+func drawMouseOutlines(selectedTool, cellSize int) {
+	if selectedTool == 0 {
+		drawSandOutline(cellSize)
+	} else {
+		drawFanOutline(cellSize)
+	}
+}
+
+func drawFanOutline(cellSize int) {
+	mouseX := (rl.GetMouseX() / int32(cellSize)) * int32(cellSize)
+	mouseY := (rl.GetMouseY() / int32(cellSize)) * int32(cellSize)
+	thickness := float32(1)
+
+	startPos := rl.NewVector2(float32(mouseX), float32(mouseY))
+	endPos := rl.NewVector2(float32(mouseX+int32(cellSize)), float32(mouseY))
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+
+	yPos := float32(mouseY + (8 * (int32(cellSize))))
+	startPos = rl.NewVector2(float32(mouseX), yPos)
+	endPos = rl.NewVector2(float32(mouseX+int32(cellSize)), yPos)
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+
+	startPos = rl.NewVector2(float32(mouseX+int32(cellSize)), float32(mouseY))
+	endPos = rl.NewVector2(float32(mouseX+int32(cellSize)), yPos)
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+
+	startPos = rl.NewVector2(float32(mouseX), float32(mouseY))
+	endPos = rl.NewVector2(float32(mouseX), yPos)
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+}
+
+func drawSandOutline(cellSize int) {
+	mouseX := (rl.GetMouseX() / int32(cellSize)) * int32(cellSize)
+	mouseY := (rl.GetMouseY() / int32(cellSize)) * int32(cellSize)
+	thickness := float32(1)
+
+	startPos := rl.NewVector2(float32(mouseX), float32(mouseY))
+	endPos := rl.NewVector2(float32(mouseX+int32(cellSize)), float32(mouseY))
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+
+	startPos = rl.NewVector2(float32(mouseX), float32(mouseY+int32(cellSize)))
+	endPos = rl.NewVector2(float32(mouseX+int32(cellSize)), float32(mouseY+int32(cellSize)))
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+
+	startPos = rl.NewVector2(float32(mouseX+int32(cellSize)), float32(mouseY))
+	endPos = rl.NewVector2(float32(mouseX+int32(cellSize)), float32(mouseY+int32(cellSize)))
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
+
+	startPos = rl.NewVector2(float32(mouseX), float32(mouseY))
+	endPos = rl.NewVector2(float32(mouseX), float32(mouseY+int32(cellSize)))
+
+	rl.DrawLineEx(startPos, endPos, thickness, rl.White)
 }
